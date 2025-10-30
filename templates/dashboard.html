@@ -1,0 +1,22 @@
+﻿<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ app_name }} Dashboard</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head><body class="bg-light">
+<nav class="navbar bg-white shadow-sm"><div class="container">
+<a class="navbar-brand">{{ app_name }}</a>
+<div class="ms-auto"><span class="me-2">Hi {{ user.name }}</span>
+<a href="{{ url_for('logout') }}" class="btn btn-outline-secondary btn-sm">Logout</a></div></div></nav>
+<div class="container py-4"><div class="card shadow-sm mb-3"><div class="card-body">
+<h5>Attendance</h5>
+{% if todays_att %}
+<p class="text-success">Checked in at <strong>{{ todays_att.check_in.strftime('%H:%M') }}</strong> — {{ todays_att.status }}</p>
+{% else %}
+<form method="post" action="{{ url_for('checkin') }}"><button class="btn btn-success">Check In Now</button></form>
+{% endif %}
+</div></div>
+<div class="card shadow-sm"><div class="card-body"><h6>Recent records</h6>
+<ul class="list-group list-group-flush">
+{% for r in recent %}<li class="list-group-item">{{ r.date.strftime('%Y-%m-%d') }} — {{ r.status }}</li>{% endfor %}
+</ul></div></div></div>
+</body></html>
