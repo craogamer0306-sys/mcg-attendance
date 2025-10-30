@@ -169,6 +169,39 @@ with app.app_context():
         admin = User(
             name="Nirjhar Ghanti",
             email="nirjhar@mcg.local",
-            employee_id="MCG-O-00_
+            employee_id="MCG-O-0002",
+            role="ADMIN"
+        )
+        admin.set_password("mcg12345")
+        db.session.add(admin)
+
+        # Employees
+        employees = [
+            ("Chinmay Kumar Ghanti", "MCG-O-0001"),
+            ("Megha Ghanti", "MCG-O-0003"),
+            ("Jhumki Ghosh", "MCG-O-0004"),
+            ("Tarun – Operations Head", "MCG-E-0001"),
+            ("Diptanu – Admin & Query", "MCG-E-0002"),
+            ("Sardhya – Operational Support", "MCG-E-0003"),
+            ("Sourasis – Field Sales", "MCG-E-0004"),
+        ]
+
+        for name, emp_id in employees:
+            u = User(
+                name=name,
+                email=f"{emp_id.lower()}@mcg.local",
+                employee_id=emp_id,
+                role="EMPLOYEE"
+            )
+            u.set_password("mcg12345")
+            db.session.add(u)
+
+        db.session.commit()
+        print("✅ Database initialized and all employees added.")
+
+
+# --- Run App ---
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
 
 
