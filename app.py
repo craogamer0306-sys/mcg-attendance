@@ -1,4 +1,4 @@
-﻿from flask import Flask, render_template, redirect, url_for, request, flash, jsonify
+from flask import Flask, render_template, redirect, url_for, request, flash, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user, UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -97,7 +97,9 @@ def dashboard():
 @app.route("/checkin", methods=["POST"])
 @login_required
 def checkin():
-    today=date.today(); now=datetime.utcnow()+timedelta(hours=5,minutes=30)
+    today=date.today()
+    # Time in IST
+    now=datetime.utcnow() + timedelta(hours=5,minutes=30)
     if Attendance.query.filter_by(user_id=current_user.id,date=today).first():
         flash("Already checked in today","info"); return redirect(url_for("dashboard"))
     status=compute_status(now)
@@ -113,7 +115,7 @@ def logout():
     flash("Logged out", "info")
     return redirect(url_for("login"))
 
-# Auto-seed
+# Auto-seed users
 with app.app_context():
     db.create_all()
     if not User.query.first():
