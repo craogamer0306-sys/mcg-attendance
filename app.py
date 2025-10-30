@@ -1,17 +1,16 @@
-﻿from flask import Flask, render_template, redirect, url_for, request, flash, jsonify
+﻿from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, login_user, login_required, logout_user, current_user, UserMixin
+from flask_login import LoginManager, UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time
 from dotenv import load_dotenv
 import os, requests
-from functools import wraps
 
 # --- Load environment variables ---
 load_dotenv()
 
 APP_NAME = os.getenv("APP_NAME", "MCG Attendance Portal")
-app = Flask(__name__, template_folder="templates")
+app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-key")
 
 # --- Database Setup ---
@@ -39,8 +38,10 @@ class User(db.Model, UserMixin):
 
     def set_password(self, pw):
         self.password_hash = generate_password_hash(pw)
+
     def check_password(self, pw):
         return check_password_hash(self.password_hash, pw)
+
 
 class Attendance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -51,6 +52,7 @@ class Attendance(db.Model):
     remarks = db.Column(db.String(255), default="")
     user = db.relationship('User', backref='attendances')
 
+
 @login_manager.user_loader
 def load_user(user_id):
     try:
@@ -58,7 +60,8 @@ def load_user(user_id):
     except Exception:
         return None
 
-# --- Helper functions ---
+
+# --- Helper Functions ---
 def parse_office_time():
     hhmm = os.getenv("OFFICE_START_HHMM", "09:30")
     try:
@@ -66,6 +69,7 @@ def parse_office_time():
     except Exception:
         h, m = 9, 30
     return time(h, m)
+
 
 def compute_status(check_in_dt: datetime):
     if check_in_dt is None:
@@ -81,6 +85,7 @@ def compute_status(check_in_dt: datetime):
     else:
         return "Late"
 
+
 # --- Notion Sync ---
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DB_ID = os.getenv("NOTION_DB_ID")
@@ -89,6 +94,7 @@ NOTION_HEADERS = {
     "Notion-Version": "2022-06-28",
     "Content-Type": "application/json",
 }
+
 
 def notion_sync(emp_name: str, emp_id: str, when_dt, status: str):
     if not NOTION_TOKEN or not NOTION_DB_ID:
@@ -117,10 +123,12 @@ def notion_sync(emp_name: str, emp_id: str, when_dt, status: str):
         app.logger.exception("Notion sync error: %s", e)
         return False
 
+
 # --- Routes ---
 @app.route("/")
 def home():
-    return "MCG Attendance Portal ✅ (Auto DB + Notion Ready)"
+    return "MCG Attendance Portal ✅ (All Employees Auto-Loaded)"
+
 
 @app.route("/scan/<emp_id>")
 def scan(emp_id):
@@ -152,21 +160,15 @@ def scan(emp_id):
         "time": now.strftime("%H:%M:%S")
     }), 200
 
-# --- Auto-create + seed DB for Render free plan ---
+
+# --- Auto-create + seed DB for Render Free Plan ---
 with app.app_context():
     db.create_all()
     if not User.query.first():
+        # Default admin
         admin = User(
             name="Nirjhar Ghanti",
             email="nirjhar@mcg.local",
-            employee_id="MCG-E-001",
-            role="ADMIN"
-        )
-        admin.set_password("mcg12345")
-        db.session.add(admin)
-        db.session.commit()
-        print("✅ Database initialized and default admin user created.")
+            employee_id="MCG-O-00_
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
 
