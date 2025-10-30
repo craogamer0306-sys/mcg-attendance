@@ -106,9 +106,12 @@ def checkin():
     flash(f"Checked in at {now.strftime('%H:%M')} — {status}","success")
     return redirect(url_for("dashboard"))
 
-@app.route("/logout"); @login_required
+@app.route("/logout")
+@login_required
 def logout():
-    logout_user(); flash("Logged out","info"); return redirect(url_for("login"))
+    logout_user()
+    flash("Logged out", "info")
+    return redirect(url_for("login"))
 
 # Auto-seed
 with app.app_context():
