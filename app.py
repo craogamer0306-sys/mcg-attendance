@@ -249,5 +249,20 @@ with app.app_context():
             u.set_password("mcg12345"); db.session.add(u)
         db.session.commit()
 
+@app.route("/reset_today")
+@login_required
+def reset_today():
+    """Allow a logged-in user to reset their own today's attendance."""
+    from datetime import date
+    today = date.today()
+    rec = Attendance.query.filter_by(user_id=current_user.id, date=today).first()
+    if rec:
+        db.session.delete(rec)
+        db.session.commit()
+        flash("✅ Today's attendance record deleted. You can now check in again.", "success")
+    else:
+        flash("ℹ️ No attendance record found for today.", "info")
+    return redirect(url_for("dashboard"))
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)), debug=True)
