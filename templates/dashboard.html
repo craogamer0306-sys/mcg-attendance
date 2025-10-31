@@ -1,96 +1,33 @@
-﻿<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{ app_name }}</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body>
-<nav class="navbar navbar-light bg-light mb-4"><div class="container">
-  <a class="navbar-brand" href="#">{{ app_name }}</a>
-  <div>Hi {{ user.name }} <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('logout') }}">Logout</a></div>
-</div></nav>
-
-<div class="container">
+﻿{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="py-4">
   <div class="card mb-3"><div class="card-body">
     <h5>Attendance</h5>
     {% if todays_att %}
-      <p>Checked in at <strong>{{ todays_att.check_in.strftime('%H:%M') }}</strong> — {{ todays_att.status }}</p>
-      <p><small>Office recorded: {{ todays_att.remarks or '-' }}</small></p>
+      <p class="text-success">Checked in at <strong>{{ todays_att.check_in.strftime("%H:%M") }}</strong> — {{ todays_att.status }}</p>
+      <p>Office: {{ todays_att.office_name or "—" }} — Inside: {{ "Yes" if todays_att.inside else "No" }}</p>
     {% else %}
-      <div id="geo-status" class="mb-2 text-muted">Click button to check your location and check in.</div>
-      <button id="btn-geo" class="btn btn-primary">Geo Check-In (recommended)</button>
-      <form method="post" action="{{ url_for('checkin') }}" class="d-inline">
-        <button class="btn btn-outline-secondary">Quick Check-In (no location)</button>
+      <form method="post" action="{{ url_for('checkin') }}">
+        <button class="btn btn-success">Quick Check-in (manual)</button>
       </form>
     {% endif %}
   </div></div>
 
   <div class="card mb-3"><div class="card-body">
     <h5>Recent records</h5>
-    {% for r in recent %}
-      <div class="mb-1">{{ r.date }} — {{ r.status }}</div>
-    {% else %}
-      <div>No records yet.</div>
-    {% endfor %}
+    <ul>
+      {% for r in recent %}
+        <li>{{ r.date }} — {{ r.status }} {% if r.office_name %} — {{ r.office_name }}{% endif %}</li>
+      {% else %}
+        <li>No records</li>
+      {% endfor %}
+    </ul>
   </div></div>
 
-  <div class="mb-3">
+  <div class="d-flex gap-2">
     <a class="btn btn-outline-secondary" href="{{ url_for('change_password') }}">Change password</a>
     <a class="btn btn-outline-success" href="{{ url_for('submit_task') }}">Submit daily task</a>
-    {% if user.role == 'ADMIN' %}
-      <a class="btn btn-warning" href="{{ url_for('admin') }}">Admin dashboard</a>
-    {% endif %}
   </div>
 </div>
-
-<script>
-document.addEventListener("DOMContentLoaded", function() {
-  const btn = document.getElementById('btn-geo');
-  const statusEl = document.getElementById('geo-status');
-  if (!btn) return;
-  btn.addEventListener('click', function(){
-    try {
-      if (!navigator.geolocation) {
-        statusEl.innerText = 'Geolocation not supported in this browser.';
-        return;
-      }
-      statusEl.innerText = 'Requesting location…';
-      navigator.geolocation.getCurrentPosition(async (pos) => {
-        try {
-          const lat = pos.coords.latitude;
-          const lon = pos.coords.longitude;
-          const acc = pos.coords.accuracy;
-          statusEl.innerText = `Got location ${lat.toFixed(5)}, ${lon.toFixed(5)} (accuracy ${Math.round(acc)}m). Checking distance…`;
-          const res = await fetch('/checkin_geo', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({lat: lat, lon: lon, accuracy: acc})
-          });
-          let j = {};
-          try { j = await res.json(); } catch(e){ j = {error: 'invalid json response'}; }
-          if (res.ok) {
-            statusEl.innerText = `Checked in: ${j.status} — ${j.office_name} — distance ${Math.round(j.distance_m)}m — ${j.inside ? 'INSIDE' : 'OUTSIDE'}`;
-            setTimeout(()=> window.location.href = '/dashboard', 700);
-          } else {
-            statusEl.innerText = 'Check-in failed: ' + (j.error || JSON.stringify(j));
-            console.error('checkin_geo error', res.status, j);
-          }
-        } catch (ex) {
-          statusEl.innerText = 'Check-in script error: ' + ex.message;
-          console.error(ex);
-        }
-      }, (err) => {
-        statusEl.innerText = 'Location denied or failed: ' + err.message;
-        console.warn('geolocation error', err);
-      }, {enableHighAccuracy:true, timeout:15000});
-    } catch (outer) {
-      statusEl.innerText = 'Unexpected error starting geolocation: ' + outer.message;
-      console.error(outer);
-    }
-  });
-});
-</script>
-
-</body>
-</html>
+{% endblock %}

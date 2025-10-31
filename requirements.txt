@@ -1,8 +1,7 @@
-﻿gunicorn==20.1.0
-flask==2.2.5
+﻿flask==2.2.5
 flask_sqlalchemy
 flask_login
 python-dotenv
 requests
 werkzeug
-qrcode[pil]
+gunicorn==20.1.0

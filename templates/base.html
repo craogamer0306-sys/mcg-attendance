@@ -1,0 +1,34 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ app_name }}{% block title %}{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  </head>
+  <body>
+    <nav class="navbar navbar-light bg-light">
+      <div class="container">
+        <a class="navbar-brand" href="{{ url_for('dashboard') }}">{{ app_name }}</a>
+        <div>
+          {% if current_user.is_authenticated %}
+            <span class="me-2">Hi {{ current_user.name }}</span>
+            <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logout') }}">Logout</a>
+          {% endif %}
+        </div>
+      </div>
+    </nav>
+    <div class="container">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div style="margin-top:12px;">
+            {% for cat, msg in messages %}
+              <div class="alert alert-{{ 'danger' if cat=='danger' else ( 'warning' if cat=='warning' else ( 'success' if cat=='success' else 'info')) }}">{{ msg }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </div>
+  </body>
+</html>
