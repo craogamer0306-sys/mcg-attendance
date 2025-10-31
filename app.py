@@ -1,18 +1,18 @@
-from flask import Flask, render_template, redirect, url_for, request, flash, jsonify
+﻿from flask import Flask, render_template, redirect, url_for, request, flash, jsonify, Response
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user, UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, date, time, timedelta
 from dotenv import load_dotenv
-import os, requests, math, json
+import os, requests, math, io, csv, json
 
-# --- Load Environment Variables ---
 load_dotenv()
+
 APP_NAME = os.getenv("APP_NAME", "MCG Attendance Portal")
 app = Flask(__name__, template_folder="templates")
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-key")
 
-# --- Database Setup ---
+# Database config
 db_url = os.getenv("DATABASE_URL", "sqlite:///mcg_local.db")
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
@@ -20,11 +20,50 @@ app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
-# --- Login Manager ---
+# Login manager
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
 
-# --- Models ---
+# Notion + Slack config
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+NOTION_TASK_DB_ID = os.getenv("NOTION_TASK_DB_ID")
+NOTION_DB_ID = os.getenv("NOTION_DB_ID")
+HEADERS = {
+    "Authorization": f"Bearer {NOTION_TOKEN}" if NOTION_TOKEN else "",
+    "Notion-Version": "2022-06-28",
+    "Content-Type": "application/json",
+}
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+
+# Offices (multiple)
+OFFICES_JSON = os.getenv("OFFICES", "").strip()
+OFFICES = []
+if OFFICES_JSON:
+    try:
+        parsed = json.loads(OFFICES_JSON)
+        OFFICES = []
+        for i, o in enumerate(parsed):
+            try:
+                name = str(o.get("name", f"office_{i+1}"))
+                lat = float(o.get("lat"))
+                lon = float(o.get("lon"))
+                radius = float(o.get("radius", os.getenv("GEO_RADIUS_METERS", 200)))
+                OFFICES.append({"name": name, "lat": lat, "lon": lon, "radius": radius})
+            except Exception:
+                continue
+    except Exception:
+        app.logger.exception("Failed to parse OFFICES env var")
+
+if not OFFICES:
+    try:
+        lat = float(os.getenv("OFFICE_LAT", "22.8394628"))
+        lon = float(os.getenv("OFFICE_LON", "87.9730338"))
+        radius = float(os.getenv("GEO_RADIUS_METERS", "200"))
+        OFFICES = [{"name": "Office", "lat": lat, "lon": lon, "radius": radius}]
+    except Exception:
+        OFFICES = [{"name": "Office", "lat": 22.8394628, "lon": 87.9730338, "radius": 200}]
+
+# Models
 class User(db.Model, UserMixin):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False)
@@ -33,128 +72,362 @@ class User(db.Model, UserMixin):
     role = db.Column(db.String(20), default="EMPLOYEE")
     employee_id = db.Column(db.String(40), unique=True, nullable=False)
     active = db.Column(db.Boolean, default=True)
-    def set_password(self, pw): self.password_hash = generate_password_hash(pw)
-    def check_password(self, pw): return check_password_hash(self.password_hash, pw)
+
+    def set_password(self, pw):
+        self.password_hash = generate_password_hash(pw)
+
+    def check_password(self, pw):
+        return check_password_hash(self.password_hash, pw)
+
 
 class Attendance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     date = db.Column(db.Date, nullable=False, default=date.today)
     check_in = db.Column(db.DateTime)
+    latitude = db.Column(db.Float, nullable=True)
+    longitude = db.Column(db.Float, nullable=True)
     status = db.Column(db.String(20))
-    location = db.Column(db.String(255))
-    user = db.relationship('User', backref='attendances')
+    remarks = db.Column(db.String(255))
+    user = db.relationship("User", backref="attendances")
+
+
+class Task(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    date = db.Column(db.Date, default=date.today)
+    title = db.Column(db.String(255))
+    description = db.Column(db.Text)
+    category = db.Column(db.String(80))
+    status = db.Column(db.String(40), default="Pending")
+    user = db.relationship("User", backref="tasks")
+
 
 @login_manager.user_loader
 def load_user(uid):
-    return db.session.get(User, int(uid))
+    try:
+        return db.session.get(User, int(uid))
+    except Exception:
+        return None
 
-# --- Geo Distance Function ---
-def haversine(lat1, lon1, lat2, lon2):
+
+# Helpers
+def haversine_distance(lat1, lon1, lat2, lon2):
     R = 6371000
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
-def get_offices():
-    try:
-        offices = json.loads(os.getenv("OFFICES", "[]"))
-        return offices
-    except Exception:
-        return []
-
-# --- Attendance Helpers ---
-def parse_office_time():
-    h, m = map(int, os.getenv("OFFICE_START_HHMM", "09:30").split(":"))
-    return time(h, m)
 
 def compute_status(dt):
-    start = parse_office_time()
-    grace = int(os.getenv("GRACE_MINUTES", "10"))
+    hhmm = os.getenv("OFFICE_START_HHMM", "09:30")
+    try:
+        h, m = map(int, hhmm.split(":"))
+    except Exception:
+        h, m = 9, 30
+    start_mins = h * 60 + m
     mins = dt.hour * 60 + dt.minute
-    startm = start.hour * 60 + start.minute
-    return "Present" if mins <= startm + grace else ("Half Day" if mins > 720 else "Late")
+    grace = int(os.getenv("GRACE_MINUTES", "10"))
+    if mins <= start_mins + grace:
+        return "Present"
+    if mins > 12 * 60:
+        return "Half Day"
+    return "Late"
 
-# --- Routes ---
+
+# Notion & Slack helpers
+def notion_sync_task(user, title, desc, when_dt, category=None, status_val="Pending", output_result="—", notes=""):
+    if not (NOTION_TOKEN and NOTION_TASK_DB_ID):
+        app.logger.debug("Notion task sync skipped")
+        return False
+    try:
+        body = {
+            "parent": {"database_id": NOTION_TASK_DB_ID},
+            "properties": {
+                "Date": {"date": {"start": when_dt.date().isoformat()}},
+                "Employee": {"title": [{"text": {"content": user.name}}]},
+                "Employee ID": {"rich_text": [{"text": {"content": user.employee_id}}]},
+                "Task Title": {"rich_text": [{"text": {"content": title or '—'}}]},
+                "Task Description": {"rich_text": [{"text": {"content": desc or '—'}}]},
+                "Category": {"rich_text": [{"text": {"content": category or ''}}]},
+                "Output Result": {"rich_text": [{"text": {"content": output_result}}]},
+                "Status": {"select": {"name": status_val}},
+                "Notes": {"rich_text": [{"text": {"content": notes}}]},
+            },
+        }
+        r = requests.post("https://api.notion.com/v1/pages", headers=HEADERS, json=body, timeout=10)
+        if r.status_code not in (200, 201):
+            app.logger.warning("Notion task sync failed status=%s text=%s", r.status_code, r.text)
+            return False
+        app.logger.info("Notion task created id=%s", r.json().get("id"))
+        return True
+    except Exception as e:
+        app.logger.exception("Notion task sync exception: %s", e)
+        return False
+
+
+def notion_sync_attendance(user, when_dt, status, lat=None, lon=None):
+    if not (NOTION_TOKEN and NOTION_DB_ID):
+        app.logger.debug("Notion attendance sync skipped")
+        return False
+    try:
+        body = {
+            "parent": {"database_id": NOTION_DB_ID},
+            "properties": {
+                "Employee Name": {"title": [{"text": {"content": user.name}}]},
+                "Employee ID": {"rich_text": [{"text": {"content": user.employee_id}}]},
+                "Date": {"date": {"start": when_dt.date().isoformat()}},
+                "Time": {"rich_text": [{"text": {"content": when_dt.strftime("%H:%M:%S")}}]},
+                "Status": {"select": {"name": status}},
+            },
+        }
+        if lat and lon:
+            body["properties"]["Location"] = {"rich_text": [{"text": {"content": f"{lat:.5f},{lon:.5f}"}}]}
+        r = requests.post("https://api.notion.com/v1/pages", headers=HEADERS, json=body, timeout=10)
+        return r.status_code in (200, 201)
+    except Exception as e:
+        app.logger.exception("Notion attendance sync error: %s", e)
+        return False
+
+
+def slack_notify(text):
+    if not SLACK_WEBHOOK_URL:
+        return False
+    try:
+        requests.post(SLACK_WEBHOOK_URL, json={"text": text}, timeout=5)
+        return True
+    except Exception as e:
+        app.logger.exception("Slack notify failed: %s", e)
+        return False
+
+
+# Routes
 @app.route("/")
 def root():
     return redirect(url_for("dashboard") if current_user.is_authenticated else url_for("login"))
 
-@app.route("/login", methods=["GET","POST"])
+
+@app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method=="POST":
-        eid=request.form["employee_id"].strip()
-        pw=request.form["password"]
-        user=User.query.filter((User.employee_id==eid)|(User.email==eid)).first()
+    if request.method == "POST":
+        eid = request.form["employee_id"].strip()
+        pw = request.form["password"]
+        user = User.query.filter((User.employee_id == eid) | (User.email == eid)).first()
         if user and user.check_password(pw):
             login_user(user)
-            flash("Welcome "+user.name,"success")
+            flash("Welcome " + user.name, "success")
             return redirect(url_for("dashboard"))
-        flash("Invalid ID or password","danger")
+        flash("Invalid ID or password", "danger")
     return render_template("login.html", app_name=APP_NAME)
+
 
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    today=date.today()
-    att=Attendance.query.filter_by(user_id=current_user.id,date=today).first()
-    recent=Attendance.query.filter_by(user_id=current_user.id).order_by(Attendance.date.desc()).limit(7)
-    return render_template("dashboard.html",user=current_user,todays_att=att,recent=recent,app_name=APP_NAME)
+    today = date.today()
+    att = Attendance.query.filter_by(user_id=current_user.id, date=today).first()
+    recent = Attendance.query.filter_by(user_id=current_user.id).order_by(Attendance.date.desc()).limit(7)
+    return render_template(
+        "dashboard.html",
+        user=current_user,
+        todays_att=att,
+        recent=recent,
+        app_name=APP_NAME,
+        offices=OFFICES,
+    )
 
-@app.route("/geo-checkin", methods=["POST"])
+
+@app.route("/checkin_geo", methods=["POST"])
 @login_required
-def geo_checkin():
-    data = request.get_json()
-    lat, lon = data.get("lat"), data.get("lon")
-    offices = get_offices()
-    best_office, best_dist = None, 999999
+def checkin_geo():
+    payload = request.get_json() or {}
+    lat = payload.get("lat")
+    lon = payload.get("lon")
+    accuracy = payload.get("accuracy")
+    if lat is None or lon is None:
+        return jsonify({"error": "location required"}), 400
 
-    for o in offices:
-        dist = haversine(lat, lon, o["lat"], o["lon"])
-        if dist < best_dist:
-            best_office, best_dist = o, dist
-
-    if not best_office:
-        return jsonify({"error": "No office found"}), 400
-
-    status = "Outside"
-    if best_dist <= best_office["radius"]:
-        status = compute_status(datetime.utcnow() + timedelta(hours=5, minutes=30))
-
-    now = datetime.utcnow() + timedelta(hours=5, minutes=30)
     today = date.today()
     if Attendance.query.filter_by(user_id=current_user.id, date=today).first():
-        return jsonify({"message":"Already checked in"}), 200
+        return jsonify({"error": "already_checked_in"}), 409
 
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except Exception:
+        return jsonify({"error": "invalid_coordinates"}), 400
+
+    now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+
+    best = None
+    best_dist = None
+    for o in OFFICES:
+        d = haversine_distance(o["lat"], o["lon"], lat_f, lon_f)
+        if best_dist is None or d < best_dist:
+            best_dist = d
+            best = o
+
+    if not best:
+        best = OFFICES[0]
+        best_dist = haversine_distance(best["lat"], best["lon"], lat_f, lon_f)
+
+    allowed = float(best.get("radius", os.getenv("GEO_RADIUS_METERS", 200)))
+    inside = best_dist <= allowed
+
+    status = compute_status(now)
+    remark_text = f"office:{best.get('name')}"
     rec = Attendance(user_id=current_user.id, date=today, check_in=now,
-                     status=status, location=f"{best_office['name']} ({best_dist:.1f}m)")
-    db.session.add(rec); db.session.commit()
-    return jsonify({"message":f"Checked in at {best_office['name']}","distance":round(best_dist,1),"status":status})
+                     latitude=lat_f, longitude=lon_f, status=status, remarks=remark_text)
+    db.session.add(rec)
+    db.session.commit()
+
+    notion_sync_attendance(current_user, now, status, lat=lat_f, lon=lon_f)
+    slack_notify(
+        f":white_check_mark: {current_user.name} ({current_user.employee_id}) checked in at {now.strftime('%H:%M')} — {status} — {best.get('name')} dist={int(best_dist)}m {'(inside)' if inside else '(outside)'}"
+    )
+
+    return jsonify({"ok": True, "status": status, "office_name": best.get("name"), "distance_m": best_dist, "inside": inside}), 200
+
+
+@app.route("/checkin", methods=["POST"])
+@login_required
+def checkin():
+    today = date.today()
+    if Attendance.query.filter_by(user_id=current_user.id, date=today).first():
+        flash("Already checked in today", "info")
+        return redirect(url_for("dashboard"))
+    now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    status = compute_status(now)
+    rec = Attendance(user_id=current_user.id, date=today, check_in=now, status=status)
+    db.session.add(rec)
+    db.session.commit()
+    notion_sync_attendance(current_user, now, status)
+    slack_notify(f":white_check_mark: {current_user.name} ({current_user.employee_id}) checked in at {now.strftime('%H:%M')} — {status} (no-location)")
+    flash(f"Checked in at {now.strftime('%H:%M')} — {status}", "success")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/submit-task", methods=["GET", "POST"])
+@login_required
+def submit_task():
+    if request.method == "POST":
+        title = request.form.get("title", "").strip()
+        desc = request.form.get("description", "").strip()
+        category = request.form.get("category", "").strip()
+        status_val = request.form.get("status", "Pending").strip()
+        if not title and not desc:
+            flash("Please enter title or description", "danger")
+            return redirect(url_for("submit_task"))
+        t = Task(user_id=current_user.id, date=date.today(), title=title, description=desc, category=category, status=status_val)
+        db.session.add(t)
+        db.session.commit()
+        now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+        notion_sync_task(current_user, title, desc, now, category=category or None, status_val=status_val)
+        slack_notify(f":memo: Task by {current_user.name} — {title or '(no title)'}")
+        flash("Task submitted successfully", "success")
+        return redirect(url_for("dashboard"))
+    return render_template("submit_task.html", app_name=APP_NAME)
+
+
+@app.route("/change-password", methods=["GET", "POST"])
+@login_required
+def change_password():
+    if request.method == "POST":
+        old = request.form.get("old_password")
+        new = request.form.get("new_password")
+        confirm = request.form.get("confirm_password")
+        if not current_user.check_password(old):
+            flash("Old password incorrect", "danger")
+            return redirect(url_for("change_password"))
+        if new != confirm:
+            flash("Passwords do not match", "danger")
+            return redirect(url_for("change_password"))
+        current_user.set_password(new)
+        db.session.commit()
+        flash("Password updated successfully", "success")
+        return redirect(url_for("dashboard"))
+    return render_template("change_password.html", app_name=APP_NAME)
+
+
+@app.route("/admin")
+@login_required
+def admin():
+    if current_user.role != "ADMIN":
+        flash("Not authorized", "danger")
+        return redirect(url_for("dashboard"))
+    users = User.query.order_by(User.name).all()
+    target = request.args.get("date")
+    if target:
+        try:
+            target_date = datetime.strptime(target, "%Y-%m-%d").date()
+        except Exception:
+            target_date = date.today()
+    else:
+        target_date = date.today()
+    attendance = Attendance.query.filter_by(date=target_date).all()
+    tasks = Task.query.order_by(Task.date.desc()).limit(200).all()
+    return render_template("admin.html", users=users, attendance=attendance, tasks=tasks, app_name=APP_NAME, target_date=target_date)
+
+
+@app.route("/export/attendance.csv")
+@login_required
+def export_attendance():
+    if current_user.role != "ADMIN":
+        return jsonify({"error": "unauthorized"}), 401
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["employee_id", "name", "date", "check_in", "lat", "lon", "status", "remarks"])
+    for a in Attendance.query.order_by(Attendance.date.desc()).all():
+        cw.writerow([a.user.employee_id, a.user.name, a.date.isoformat(), a.check_in.isoformat() if a.check_in else "", a.latitude or "", a.longitude or "", a.status or "", a.remarks or ""])
+    return Response(si.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=attendance.csv"})
+
+
+@app.route("/export/tasks.csv")
+@login_required
+def export_tasks():
+    if current_user.role != "ADMIN":
+        return jsonify({"error": "unauthorized"}), 401
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["employee_id", "name", "date", "title", "description", "category", "status"])
+    for t in Task.query.order_by(Task.date.desc()).all():
+        cw.writerow([t.user.employee_id, t.user.name, t.date.isoformat(), t.title or "", t.description or "", t.category or "", t.status or ""])
+    return Response(si.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=tasks.csv"})
+
 
 @app.route("/logout")
 @login_required
 def logout():
     logout_user()
-    flash("Logged out","info")
+    flash("Logged out", "info")
     return redirect(url_for("login"))
 
-# --- Auto Seed ---
+
+# Auto-seed (only when DB empty)
 with app.app_context():
     db.create_all()
     if not User.query.first():
-        admin=User(name="Nirjhar Ghanti",email="nirjhar@mcg.local",employee_id="MCG-O-0002",role="ADMIN")
+        admin = User(name="Nirjhar Ghanti", email="nirjhar@mcg.local", employee_id="MCG-O-0002", role="ADMIN")
         admin.set_password("mcg12345")
         db.session.add(admin)
-        users=[("Chinmay Kumar Ghanti","MCG-O-0001"),("Megha Ghanti","MCG-O-0003"),
-               ("Jhumki Ghosh","MCG-O-0004"),("Tarun – Operations Head","MCG-E-0001"),
-               ("Diptanu – Admin & Query","MCG-E-0002"),("Sardhya – Operational Support","MCG-E-0003"),
-               ("Sourasis – Field Sales","MCG-E-0004")]
-        for n,i in users:
-            u=User(name=n,email=f"{i.lower()}@mcg.local",employee_id=i,role="EMPLOYEE")
-            u.set_password("mcg12345"); db.session.add(u)
-        db.session.commit(); print("✅ Users seeded")
+        seed_list = [
+            ("Chinmay Kumar Ghanti", "MCG-O-0001"),
+            ("Megha Ghanti", "MCG-O-0003"),
+            ("Jhumki Ghanti", "MCG-O-0004"),
+            ("Tarun – Operations Head", "MCG-E-0001"),
+            ("Diptanu – Admin & Query", "MCG-E-0002"),
+            ("Sardhya – Operational Support", "MCG-E-0003"),
+            ("Sourasis – Field Sales", "MCG-E-0004"),
+        ]
+        for n, i in seed_list:
+            u = User(name=n, email=f"{i.lower()}@mcg.local", employee_id=i, role="EMPLOYEE")
+            u.set_password("mcg12345")
+            db.session.add(u)
+        db.session.commit()
 
-if __name__=="__main__":
-    app.run(host="0.0.0.0",port=int(os.getenv("PORT",5000)),debug=True)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
