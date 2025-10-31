@@ -121,6 +121,7 @@ def notion_sync_task(user, title, desc, when_dt, category=None, status_val="Pend
         app.logger.debug("Notion task sync skipped: missing NOTION_TOKEN/NOTION_TASK_DB_ID")
         return False
     try:
+        # Map fields to your DailyTasks DB which expects Category as rich_text
         body = {
             "parent": {"database_id": NOTION_TASK_DB_ID},
             "properties": {
@@ -129,8 +130,10 @@ def notion_sync_task(user, title, desc, when_dt, category=None, status_val="Pend
                 "Employee ID": {"rich_text": [{"text": {"content": user.employee_id}}]},
                 "Task Title": {"rich_text": [{"text": {"content": title or '—'}}]},
                 "Task Description": {"rich_text": [{"text": {"content": desc or '—'}}]},
-                "Category": {"select": {"name": category}} if category else {"rich_text": [{"text": {"content": ""}}]},
+                # Category must be rich_text (your DB expects text)
+                "Category": {"rich_text": [{"text": {"content": category or ''}}]},
                 "Output Result": {"rich_text": [{"text": {"content": output_result}}]},
+                # Status kept as select (your DB currently has Status as select)
                 "Status": {"select": {"name": status_val}},
                 "Notes": {"rich_text": [{"text": {"content": notes}}]},
             }
