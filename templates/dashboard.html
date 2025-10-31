@@ -45,29 +45,50 @@
 </div>
 
 <script>
-const offices = {{ offices|tojson }};
-document.getElementById('btn-geo')?.addEventListener('click', async function(){
+document.addEventListener("DOMContentLoaded", function() {
+  const btn = document.getElementById('btn-geo');
   const statusEl = document.getElementById('geo-status');
-  if (!navigator.geolocation) { statusEl.innerText = 'Geolocation not supported in this browser.'; return; }
-  statusEl.innerText = 'Requesting location…';
-  navigator.geolocation.getCurrentPosition(async (pos) => {
-    const lat = pos.coords.latitude, lon = pos.coords.longitude, acc = pos.coords.accuracy;
-    statusEl.innerText = Got location: ,  (accuracy m). Checking distance…;
-    const res = await fetch('/checkin_geo', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({lat: lat, lon: lon, accuracy: acc})
-    });
-    const j = await res.json();
-    if (res.ok) {
-      statusEl.innerText = Checked in:  —  — distance m — ;
-      setTimeout(()=> window.location.href = '/dashboard', 700);
-    } else {
-      statusEl.innerText = 'Check-in failed: '+(j.error || JSON.stringify(j));
+  if (!btn) return;
+  btn.addEventListener('click', function(){
+    try {
+      if (!navigator.geolocation) {
+        statusEl.innerText = 'Geolocation not supported in this browser.';
+        return;
+      }
+      statusEl.innerText = 'Requesting location…';
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        try {
+          const lat = pos.coords.latitude;
+          const lon = pos.coords.longitude;
+          const acc = pos.coords.accuracy;
+          statusEl.innerText = `Got location ${lat.toFixed(5)}, ${lon.toFixed(5)} (accuracy ${Math.round(acc)}m). Checking distance…`;
+          const res = await fetch('/checkin_geo', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({lat: lat, lon: lon, accuracy: acc})
+          });
+          let j = {};
+          try { j = await res.json(); } catch(e){ j = {error: 'invalid json response'}; }
+          if (res.ok) {
+            statusEl.innerText = `Checked in: ${j.status} — ${j.office_name} — distance ${Math.round(j.distance_m)}m — ${j.inside ? 'INSIDE' : 'OUTSIDE'}`;
+            setTimeout(()=> window.location.href = '/dashboard', 700);
+          } else {
+            statusEl.innerText = 'Check-in failed: ' + (j.error || JSON.stringify(j));
+            console.error('checkin_geo error', res.status, j);
+          }
+        } catch (ex) {
+          statusEl.innerText = 'Check-in script error: ' + ex.message;
+          console.error(ex);
+        }
+      }, (err) => {
+        statusEl.innerText = 'Location denied or failed: ' + err.message;
+        console.warn('geolocation error', err);
+      }, {enableHighAccuracy:true, timeout:15000});
+    } catch (outer) {
+      statusEl.innerText = 'Unexpected error starting geolocation: ' + outer.message;
+      console.error(outer);
     }
-  }, (err)=> {
-    statusEl.innerText = 'Location denied or failed: '+err.message;
-  }, {enableHighAccuracy:true, timeout:10000});
+  });
 });
 </script>
 
